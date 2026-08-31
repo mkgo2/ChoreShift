@@ -1,0 +1,20 @@
+{
+  "name": "choreshift",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fair household chore scheduling, balanced by effort and real availability.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspace @choreshift/engine",
+    "typecheck": "npm run typecheck --workspace @choreshift/engine",
+    "typecheck:app": "npm run typecheck --workspace choreshift-mobile",
+    "start": "npm run start --workspace choreshift-mobile",
+    "web": "npm run web --workspace choreshift-mobile"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

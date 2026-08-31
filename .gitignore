@@ -1,0 +1,20 @@
+node_modules/
+.expo/
+dist/
+web-build/
+coverage/
+*.tsbuildinfo
+
+.env
+.env.local
+*.local
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+
+# Claude Code local config
+.claude/
