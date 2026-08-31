@@ -148,6 +148,7 @@ export const SEED_RULES: Rules = {
   balanceTolerance: 3,
   carryOverPreviousImbalance: true,
   defaultDurationMinutes: 15,
+  openCoverageWindowMinutes: 120,
 };
 
 export function seedHousehold(): Household {

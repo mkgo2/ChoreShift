@@ -56,7 +56,7 @@ CI runs the engine tests and typechecks both workspaces on every push and pull r
 
 **Engine, smaller.** Monthly recurrences (`the first Saturday`), chores that need two people at once, and per-chore minimum gaps ("not two days running") are all unmodelled.
 
-**App.** One-off availability exceptions exist in the engine (`Member.exceptions`) but have no UI — "I'm away this Saturday" currently has to be expressed as a pause. Completion tracking and the swap-approval screens are Phase 2 and unstarted.
+**App.** One-off availability exceptions (`Member.exceptions`) now have a UI via the "Called out" section on each member's editor, which also drives a claim → escalate → approve coverage-request flow for whatever they were already scheduled to do that day. What's still missing: an exception for anything short of a full day off (partial-day windows), and a way to propose a swap outside the call-out flow — trading two assignments directly with no availability change involved. Completion tracking is Phase 2 and unstarted.
 
 **Docs.** If something in `docs/` was wrong or confusing when you read it, that is worth a PR on its own.
 

@@ -225,6 +225,22 @@ export function declineSwap(request: SwapRequest): SwapRequest {
 }
 
 /**
+ * Has an open-to-anyone request sat unclaimed past the household's coverage
+ * window? Only "pending" requests still open to anyone can expire this way —
+ * one already narrowed to a specific person is waiting on their answer, not
+ * on the clock.
+ */
+export function isSwapExpired(
+  request: SwapRequest,
+  windowMinutes: number,
+  now: Date = new Date(),
+): boolean {
+  if (request.status !== 'pending' || request.toMemberId !== null) return false;
+  const elapsedMs = now.getTime() - new Date(request.createdAt).getTime();
+  return elapsedMs >= windowMinutes * 60_000;
+}
+
+/**
  * Reassign directly, bypassing the request flow.
  *
  * This is the admin override the scope calls for. It still refuses to break a

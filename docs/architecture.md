@@ -31,6 +31,8 @@ For a household-sized problem (a handful of people, a few dozen weekly chore ins
 
 The one thing that *is* stored is **pins**. When an admin reassigns a chore by hand, that becomes a locked assignment which the engine treats as fixed and rebalances around. Pins are user intent, so they persist; everything else is a consequence.
 
+**Open coverage requests** are the second stored thing, added alongside pins for the call-out flow. Marking a date unavailable (`callOut` in `household-store.tsx`) does two things at once: it adds an `AvailabilityException` for that member, and it pins that day's affected assignments to them rather than letting the scheduler quietly hand the work to someone else the moment the exception lands. A `SwapRequest` (from `packages/engine/src/swaps.ts`) tracks the rest — open to anyone, then narrowed to a specific person past the household's coverage window. Claiming or approving one just calls `evaluateSwap` for the hard-rule check and then re-pins, the same mechanism the Week screen's manual reassignment already uses. Nothing here bypasses the filters-not-costs rule: a claim or an approval that would break a hard rule is refused with the same reasons `evaluateSwap` gives anywhere else.
+
 ## Determinism
 
 `generateSchedule` is a pure function. The same household, date range, pins and seed always produce the same schedule.

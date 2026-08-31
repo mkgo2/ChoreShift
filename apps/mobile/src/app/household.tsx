@@ -6,8 +6,8 @@
  * pause switch for the weeks somebody is away.
  */
 
-import { formatClock, parseClock } from '@choreshift/engine';
-import type { AvailabilityWindow, Member, Weekday } from '@choreshift/engine';
+import { addDays, formatClock, parseClock } from '@choreshift/engine';
+import type { AvailabilityWindow, ISODate, Member, Weekday } from '@choreshift/engine';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -29,7 +29,7 @@ import {
 } from '@/components/ui-kit';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { useHousehold } from '@/store/household-store';
+import { mondayOf, useHousehold } from '@/store/household-store';
 
 const DAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as const;
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -124,6 +124,14 @@ export default function HouseholdScreen() {
   );
 }
 
+/** Monday through Sunday of the week on screen, for one-tap call-outs. */
+function thisWeekDates(): ISODate[] {
+  const monday = mondayOf(new Date().toISOString().slice(0, 10));
+  return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+}
+
+const DATE_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
 function MemberEditor({
   member,
   onChange,
@@ -133,6 +141,9 @@ function MemberEditor({
   onChange: (member: Member) => void;
   onDelete: () => void;
 }) {
+  const { callOut, dispatch } = useHousehold();
+  const [customDate, setCustomDate] = useState('');
+
   function setWindow(index: number, next: AvailabilityWindow) {
     onChange({
       ...member,
@@ -201,6 +212,73 @@ function MemberEditor({
       ))}
 
       <Button label="Add a window" onPress={addWindow} />
+
+      <SectionLabel>Called out</SectionLabel>
+      <Body muted style={styles.meta}>
+        Marks a date fully unavailable and puts anything already on the
+        schedule that day up for grabs — the household gets first shot at it,
+        and it only comes back to you to arrange a direct swap if nobody
+        claims it in time.
+      </Body>
+
+      {member.exceptions.length === 0 ? null : (
+        <View style={styles.exceptionList}>
+          {member.exceptions.map((exception) => (
+            <View key={exception.date} style={styles.exceptionRow}>
+              <Pill label={exception.date} selected />
+              <Button
+                label="Cancel"
+                compact
+                tone="danger"
+                onPress={() =>
+                  dispatch({
+                    type: 'removeException',
+                    memberId: member.id,
+                    date: exception.date,
+                  })
+                }
+              />
+            </View>
+          ))}
+        </View>
+      )}
+
+      <View style={styles.chipWrap}>
+        {thisWeekDates().map((date, index) => {
+          const already = member.exceptions.some((e) => e.date === date);
+          return (
+            <Pill
+              key={date}
+              label={`${DATE_LABELS[index]} ${date.slice(8, 10)}`}
+              selected={already}
+              onPress={already ? undefined : () => callOut(member.id, date)}
+            />
+          );
+        })}
+      </View>
+
+      <Row>
+        <Field
+          label="Or a specific date"
+          value={customDate}
+          onChangeText={setCustomDate}
+          placeholder="2026-09-13"
+          autoCapitalize="none"
+        />
+        <View style={styles.removeCol}>
+          <Button
+            label="I'm out"
+            compact
+            tone="danger"
+            disabled={!/^\d{4}-\d{2}-\d{2}$/.test(customDate)}
+            onPress={() => {
+              callOut(member.id, customDate);
+              setCustomDate('');
+            }}
+          />
+        </View>
+      </Row>
+
       <Button label="Remove person" tone="danger" onPress={onDelete} />
     </View>
   );
@@ -324,4 +402,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   removeCol: { justifyContent: 'flex-end', paddingBottom: 2 },
+  exceptionList: { gap: Spacing.one },
+  exceptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.one + 2 },
 });
