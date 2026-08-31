@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { generateSchedule } from '../src/schedule';
 import { seedHousehold } from '../src/seed';
-import { approveSwap, declineSwap, evaluateSwap, proposeSwap, reassign } from '../src/swaps';
+import {
+  approveSwap,
+  declineSwap,
+  evaluateSwap,
+  isSwapExpired,
+  proposeSwap,
+  reassign,
+} from '../src/swaps';
 import type { Assignment, Household } from '../src/types';
 
 const WEEK = { start: '2026-09-07', end: '2026-09-13' } as const;
@@ -207,6 +214,60 @@ describe('approveSwap', () => {
       fromMemberId: mop.memberId,
     });
     expect(declineSwap(request).status).toBe('declined');
+  });
+});
+
+describe('isSwapExpired', () => {
+  it('is not expired before the coverage window elapses', () => {
+    const request = {
+      id: 'swap-fresh',
+      instanceId: 'x',
+      fromMemberId: 'member-alex',
+      toMemberId: null,
+      status: 'pending' as const,
+      createdAt: '2026-09-07T09:00:00.000Z',
+    };
+    const now = new Date('2026-09-07T10:59:00.000Z'); // 1h59m later
+    expect(isSwapExpired(request, 120, now)).toBe(false);
+  });
+
+  it('is expired once the coverage window has fully elapsed', () => {
+    const request = {
+      id: 'swap-stale',
+      instanceId: 'x',
+      fromMemberId: 'member-alex',
+      toMemberId: null,
+      status: 'pending' as const,
+      createdAt: '2026-09-07T09:00:00.000Z',
+    };
+    const now = new Date('2026-09-07T11:00:00.000Z'); // exactly 2h later
+    expect(isSwapExpired(request, 120, now)).toBe(true);
+  });
+
+  it('never expires a request already narrowed to a specific person', () => {
+    const request = {
+      id: 'swap-narrowed',
+      instanceId: 'x',
+      fromMemberId: 'member-alex',
+      toMemberId: 'member-bailey',
+      status: 'pending' as const,
+      createdAt: '2026-09-07T09:00:00.000Z',
+    };
+    const now = new Date('2026-09-08T09:00:00.000Z'); // a full day later
+    expect(isSwapExpired(request, 120, now)).toBe(false);
+  });
+
+  it('never expires a request that is no longer pending', () => {
+    const request = {
+      id: 'swap-done',
+      instanceId: 'x',
+      fromMemberId: 'member-alex',
+      toMemberId: null,
+      status: 'approved' as const,
+      createdAt: '2026-09-07T09:00:00.000Z',
+    };
+    const now = new Date('2026-09-08T09:00:00.000Z');
+    expect(isSwapExpired(request, 120, now)).toBe(false);
   });
 });
 

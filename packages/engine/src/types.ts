@@ -158,6 +158,11 @@ export interface Rules {
   carryOverPreviousImbalance: boolean;
   /** Fallback for tasks with no `durationMinutes`. */
   defaultDurationMinutes: number;
+  /**
+   * How long an open coverage request (someone called out) stays open to
+   * anyone before it must be escalated to a specific person who accepts it.
+   */
+  openCoverageWindowMinutes: number;
 }
 
 export interface Household {
@@ -226,4 +231,5 @@ export const DEFAULT_RULES: Rules = {
   balanceTolerance: 2,
   carryOverPreviousImbalance: false,
   defaultDurationMinutes: 15,
+  openCoverageWindowMinutes: 120,
 };

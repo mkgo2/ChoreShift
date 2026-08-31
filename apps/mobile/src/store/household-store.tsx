@@ -14,7 +14,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   addDays,
   carryOverFrom,
+  evaluateSwap,
   generateSchedule,
+  isSwapExpired,
+  proposeSwap,
   seedHousehold,
   startOfWeek,
 } from '@choreshift/engine';
@@ -26,6 +29,8 @@ import type {
   MemberId,
   Rules,
   ScheduleResult,
+  SwapEvaluation,
+  SwapRequest,
   Task,
   TaskId,
 } from '@choreshift/engine';
@@ -64,6 +69,12 @@ export interface AppState {
   locked: Assignment[];
   /** Bumping this reshuffles between equally fair schedules. */
   seed: number;
+  /**
+   * Chores somebody called out of. Each one starts open to the whole
+   * household; if nobody claims it in time it gets narrowed to a specific
+   * person who still has to accept it. See `callOut` below.
+   */
+  openRequests: SwapRequest[];
   hydrated: boolean;
 }
 
@@ -73,6 +84,7 @@ function initialState(): AppState {
     weekStart: mondayOf(todayISO()),
     locked: [],
     seed: 1,
+    openRequests: [],
     hydrated: false,
   };
 }
@@ -90,6 +102,11 @@ type Action =
   | { type: 'pin'; assignment: Assignment }
   | { type: 'unpin'; instanceId: string }
   | { type: 'clearPins' }
+  | { type: 'addException'; memberId: MemberId; date: ISODate; note?: string }
+  | { type: 'removeException'; memberId: MemberId; date: ISODate }
+  | { type: 'addOpenRequest'; request: SwapRequest }
+  | { type: 'updateOpenRequest'; request: SwapRequest }
+  | { type: 'removeOpenRequest'; requestId: string }
   | { type: 'reset' };
 
 function reducer(state: AppState, action: Action): AppState {
@@ -122,6 +139,10 @@ function reducer(state: AppState, action: Action): AppState {
       );
       // Pins belonging to a departed member are meaningless; drop them.
       const locked = state.locked.filter((a) => a.memberId !== action.memberId);
+      const openRequests = state.openRequests.filter(
+        (r) =>
+          r.fromMemberId !== action.memberId && r.toMemberId !== action.memberId,
+      );
       const rules: Rules = {
         ...state.household.rules,
         blackouts: state.household.rules.blackouts.filter(
@@ -131,7 +152,12 @@ function reducer(state: AppState, action: Action): AppState {
           (p) => p.memberId !== action.memberId,
         ),
       };
-      return { ...state, locked, household: { ...state.household, members, rules } };
+      return {
+        ...state,
+        locked,
+        openRequests,
+        household: { ...state.household, members, rules },
+      };
     }
 
     case 'upsertTask': {
@@ -147,6 +173,9 @@ function reducer(state: AppState, action: Action): AppState {
     case 'removeTask': {
       const tasks = state.household.tasks.filter((t) => t.id !== action.taskId);
       const locked = state.locked.filter((a) => a.taskId !== action.taskId);
+      const openRequests = state.openRequests.filter(
+        (r) => !r.instanceId.startsWith(`${action.taskId}@`),
+      );
       const rules: Rules = {
         ...state.household.rules,
         taskPairExclusions: state.household.rules.taskPairExclusions.filter(
@@ -156,7 +185,12 @@ function reducer(state: AppState, action: Action): AppState {
           (p) => p.taskId !== action.taskId,
         ),
       };
-      return { ...state, locked, household: { ...state.household, tasks, rules } };
+      return {
+        ...state,
+        locked,
+        openRequests,
+        household: { ...state.household, tasks, rules },
+      };
     }
 
     case 'updateRules':
@@ -185,6 +219,44 @@ function reducer(state: AppState, action: Action): AppState {
     case 'clearPins':
       return { ...state, locked: [] };
 
+    case 'addException': {
+      const members = state.household.members.map((m) => {
+        if (m.id !== action.memberId) return m;
+        const exceptions = [
+          ...m.exceptions.filter((e) => e.date !== action.date),
+          { date: action.date, windows: [], ...(action.note ? { note: action.note } : {}) },
+        ];
+        return { ...m, exceptions };
+      });
+      return { ...state, household: { ...state.household, members } };
+    }
+
+    case 'removeException': {
+      const members = state.household.members.map((m) =>
+        m.id !== action.memberId
+          ? m
+          : { ...m, exceptions: m.exceptions.filter((e) => e.date !== action.date) },
+      );
+      return { ...state, household: { ...state.household, members } };
+    }
+
+    case 'addOpenRequest':
+      return { ...state, openRequests: [...state.openRequests, action.request] };
+
+    case 'updateOpenRequest':
+      return {
+        ...state,
+        openRequests: state.openRequests.map((r) =>
+          r.id === action.request.id ? action.request : r,
+        ),
+      };
+
+    case 'removeOpenRequest':
+      return {
+        ...state,
+        openRequests: state.openRequests.filter((r) => r.id !== action.requestId),
+      };
+
     case 'reset':
       return { ...initialState(), hydrated: true };
 
@@ -206,6 +278,22 @@ interface StoreValue extends AppState {
     memberId: MemberId,
   ) => void;
   isPinned: (instanceId: string) => boolean;
+  /**
+   * "I'm out on this date." Marks the day unavailable and puts every chore the
+   * member currently holds that day up for grabs — open to the household
+   * first, escalating to a specific person only if nobody claims it.
+   */
+  callOut: (memberId: MemberId, date: ISODate, note?: string) => void;
+  /** Anyone eligible may claim an open request; the first to do so gets it. */
+  claimRequest: (requestId: string, claimantId: MemberId) => SwapEvaluation;
+  /** Past the coverage window, the caller-out proposes a specific person. */
+  escalateRequest: (requestId: string, toMemberId: MemberId) => void;
+  /** The proposed person accepts or declines; nothing moves without this. */
+  respondToEscalation: (requestId: string, approve: boolean) => SwapEvaluation;
+  /** Give up on finding coverage and let the scheduler decide instead. */
+  cancelRequest: (requestId: string) => void;
+  /** Has this request sat open past the household's coverage window? */
+  isRequestExpired: (request: SwapRequest) => boolean;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -288,9 +376,151 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     [state.locked],
   );
 
+  const callOut = useCallback(
+    (memberId: MemberId, date: ISODate, note?: string) => {
+      dispatch({ type: 'addException', memberId, date, note });
+
+      // Keep today's affected chores pinned to the caller-out for now — the
+      // moment the exception lands the scheduler would otherwise be free to
+      // hand them to someone else on its own, silently. The whole point of
+      // this flow is to ask the household first.
+      const affected = schedule.assignments.filter(
+        (a) => a.memberId === memberId && a.date === date,
+      );
+      for (const assignment of affected) {
+        dispatch({ type: 'pin', assignment: { ...assignment, locked: true } });
+        const request = proposeSwap(schedule.assignments, {
+          id: `cover:${assignment.instanceId}:${Date.now()}`,
+          instanceId: assignment.instanceId,
+          fromMemberId: memberId,
+        });
+        dispatch({ type: 'addOpenRequest', request });
+      }
+    },
+    [schedule.assignments],
+  );
+
+  const claimRequest = useCallback(
+    (requestId: string, claimantId: MemberId): SwapEvaluation => {
+      const request = state.openRequests.find((r) => r.id === requestId);
+      if (!request) return { ok: false, problems: ['That request no longer exists.'] };
+
+      const evaluation = evaluateSwap(
+        state.household,
+        schedule.assignments,
+        request.instanceId,
+        claimantId,
+      );
+      if (!evaluation.ok) return evaluation;
+
+      const assignment = schedule.assignments.find(
+        (a) => a.instanceId === request.instanceId,
+      );
+      if (assignment) {
+        dispatch({
+          type: 'pin',
+          assignment: { ...assignment, memberId: claimantId, locked: true },
+        });
+      }
+      dispatch({ type: 'removeOpenRequest', requestId });
+      return evaluation;
+    },
+    [state.openRequests, state.household, schedule.assignments],
+  );
+
+  const escalateRequest = useCallback(
+    (requestId: string, toMemberId: MemberId) => {
+      const request = state.openRequests.find((r) => r.id === requestId);
+      if (!request) return;
+      dispatch({ type: 'updateOpenRequest', request: { ...request, toMemberId } });
+    },
+    [state.openRequests],
+  );
+
+  const respondToEscalation = useCallback(
+    (requestId: string, approve: boolean): SwapEvaluation => {
+      const request = state.openRequests.find((r) => r.id === requestId);
+      if (!request || !request.toMemberId) {
+        return { ok: false, problems: ['Nothing is waiting on an answer.'] };
+      }
+
+      if (!approve) {
+        // Back into the open pool — the caller-out can propose someone else.
+        dispatch({
+          type: 'updateOpenRequest',
+          request: { ...request, toMemberId: null },
+        });
+        return { ok: true, problems: [] };
+      }
+
+      const evaluation = evaluateSwap(
+        state.household,
+        schedule.assignments,
+        request.instanceId,
+        request.toMemberId,
+      );
+      if (!evaluation.ok) return evaluation;
+
+      const assignment = schedule.assignments.find(
+        (a) => a.instanceId === request.instanceId,
+      );
+      if (assignment) {
+        dispatch({
+          type: 'pin',
+          assignment: { ...assignment, memberId: request.toMemberId, locked: true },
+        });
+      }
+      dispatch({ type: 'removeOpenRequest', requestId });
+      return evaluation;
+    },
+    [state.openRequests, state.household, schedule.assignments],
+  );
+
+  const cancelRequest = useCallback(
+    (requestId: string) => {
+      const request = state.openRequests.find((r) => r.id === requestId);
+      dispatch({ type: 'removeOpenRequest', requestId });
+      // Let the scheduler decide again rather than leaving it stuck on
+      // someone who already said they can't do it.
+      if (request) dispatch({ type: 'unpin', instanceId: request.instanceId });
+    },
+    [state.openRequests],
+  );
+
+  const isRequestExpired = useCallback(
+    (request: SwapRequest) =>
+      isSwapExpired(request, state.household.rules.openCoverageWindowMinutes),
+    [state.household.rules.openCoverageWindowMinutes],
+  );
+
   const value = useMemo<StoreValue>(
-    () => ({ ...state, schedule, weekEnd, dispatch, assignTo, isPinned }),
-    [state, schedule, weekEnd, assignTo, isPinned],
+    () => ({
+      ...state,
+      schedule,
+      weekEnd,
+      dispatch,
+      assignTo,
+      isPinned,
+      callOut,
+      claimRequest,
+      escalateRequest,
+      respondToEscalation,
+      cancelRequest,
+      isRequestExpired,
+    }),
+    [
+      state,
+      schedule,
+      weekEnd,
+      assignTo,
+      isPinned,
+      callOut,
+      claimRequest,
+      escalateRequest,
+      respondToEscalation,
+      cancelRequest,
+      isRequestExpired,
+    ],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

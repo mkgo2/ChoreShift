@@ -14,7 +14,7 @@ import {
   weekdayName,
   weekdayOf,
 } from '@choreshift/engine';
-import type { Assignment, ISODate, Member, Task } from '@choreshift/engine';
+import type { Assignment, ISODate, Member, SwapRequest, Task } from '@choreshift/engine';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 
@@ -42,8 +42,21 @@ function shortDate(date: ISODate): string {
 
 export default function WeekScreen() {
   const theme = useTheme();
-  const { household, schedule, weekStart, weekEnd, dispatch, assignTo, isPinned } =
-    useHousehold();
+  const {
+    household,
+    schedule,
+    weekStart,
+    weekEnd,
+    dispatch,
+    assignTo,
+    isPinned,
+    openRequests,
+    claimRequest,
+    escalateRequest,
+    respondToEscalation,
+    cancelRequest,
+    isRequestExpired,
+  } = useHousehold();
   const [openInstance, setOpenInstance] = useState<string | null>(null);
 
   const tasksById = useMemo(
@@ -83,6 +96,11 @@ export default function WeekScreen() {
   }, [schedule.unassigned]);
 
   const pinnedCount = schedule.assignments.filter((a) => isPinned(a.instanceId)).length;
+
+  const requestsByInstance = useMemo(
+    () => new Map(openRequests.map((r) => [r.instanceId, r])),
+    [openRequests],
+  );
 
   return (
     <Screen
@@ -142,6 +160,17 @@ export default function WeekScreen() {
         </Row>
       ) : null}
 
+      {openRequests.length > 0 ? (
+        <Callout
+          tone="warning"
+          title={`${openRequests.length} ${
+            openRequests.length === 1 ? 'chore needs' : 'chores need'
+          } coverage`}>
+          Somebody called out. Marked below on the day it falls — claim one if
+          you can take it.
+        </Callout>
+      ) : null}
+
       {days.map((date) => {
         const assignments = byDate.get(date) ?? [];
         const groups = groupByDate.get(date) ?? [];
@@ -167,9 +196,11 @@ export default function WeekScreen() {
               if (!task) return null;
               const open = openInstance === assignment.instanceId;
               const pinned = isPinned(assignment.instanceId);
+              const request = requestsByInstance.get(assignment.instanceId);
 
               return (
-                <Card key={assignment.instanceId}>
+                <View key={assignment.instanceId} style={styles.assignmentGroup}>
+                <Card>
                   <Pressable
                     accessibilityRole="button"
                     onPress={() =>
@@ -185,7 +216,15 @@ export default function WeekScreen() {
                         </Body>
                       </View>
                       <View style={styles.assignee}>
-                        {pinned ? <Pill label="Pinned" selected /> : null}
+                        {request ? (
+                          <Pill
+                            label="Up for grabs"
+                            background={theme.warningSoft}
+                            color={theme.warning}
+                          />
+                        ) : pinned ? (
+                          <Pill label="Pinned" selected />
+                        ) : null}
                         {member ? (
                           <MemberChip
                             id={member.id}
@@ -226,6 +265,10 @@ export default function WeekScreen() {
                     </>
                   ) : null}
                 </Card>
+                {request ? (
+                  <CoverageRequestCard request={request} task={task} date={assignment.date} />
+                ) : null}
+                </View>
               );
             })}
 
@@ -343,8 +386,122 @@ function ReassignRow({
   );
 }
 
+/**
+ * The coverage-request card under an "up for grabs" assignment.
+ *
+ * Open first, to anyone: any eligible member can claim it and it is theirs.
+ * Past the household's coverage window with nobody claiming it, the
+ * caller-out has to name a specific person — and that person still has to
+ * tap Approve before anything moves. Nothing here is silent or automatic.
+ */
+function CoverageRequestCard({
+  request,
+  task,
+  date,
+}: {
+  request: SwapRequest;
+  task: Task;
+  date: ISODate;
+}) {
+  const theme = useTheme();
+  const {
+    household,
+    claimRequest,
+    escalateRequest,
+    respondToEscalation,
+    cancelRequest,
+    isRequestExpired,
+  } = useHousehold();
+  const [problem, setProblem] = useState<string | null>(null);
+
+  const membersById = useMemo(
+    () => new Map(household.members.map((m) => [m.id, m])),
+    [household.members],
+  );
+  const from = membersById.get(request.fromMemberId);
+  const others = household.members.filter((m) => m.id !== request.fromMemberId);
+  const expired = isRequestExpired(request);
+
+  function report(result: { ok: boolean; problems: string[] }) {
+    setProblem(result.ok ? null : result.problems.join(' '));
+  }
+
+  return (
+    <Card style={{ borderColor: theme.warning, backgroundColor: theme.warningSoft }}>
+      <Row>
+        <Body style={styles.meta}>
+          {from?.name ?? 'Someone'} called out — {task.name} on {date} needs
+          someone else.
+        </Body>
+        <Button
+          label="Cancel"
+          compact
+          tone="danger"
+          onPress={() => cancelRequest(request.id)}
+        />
+      </Row>
+
+      {problem ? (
+        <Body muted style={[styles.meta, { color: theme.danger }]}>
+          {problem}
+        </Body>
+      ) : null}
+
+      {request.toMemberId ? (
+        <>
+          <Body muted style={styles.meta}>
+            Waiting on {membersById.get(request.toMemberId)?.name ?? 'them'} to
+            accept — nothing moves until they do.
+          </Body>
+          <Row>
+            <Button
+              label="Approve"
+              tone="accent"
+              compact
+              onPress={() => report(respondToEscalation(request.id, true))}
+            />
+            <Button
+              label="Decline"
+              compact
+              onPress={() => report(respondToEscalation(request.id, false))}
+            />
+          </Row>
+        </>
+      ) : expired ? (
+        <>
+          <Body muted style={styles.meta}>
+            Nobody claimed it. Pick someone to swap with — they still have to
+            accept before it's theirs.
+          </Body>
+          <View style={styles.chipWrap}>
+            {others.map((m) => (
+              <Pill key={m.id} label={m.name} onPress={() => escalateRequest(request.id, m.id)} />
+            ))}
+          </View>
+        </>
+      ) : (
+        <>
+          <Body muted style={styles.meta}>
+            Open to the household — first to claim it takes it.
+          </Body>
+          <View style={styles.chipWrap}>
+            {others.map((m) => (
+              <Pill
+                key={m.id}
+                label={m.name}
+                onPress={() => report(claimRequest(request.id, m.id))}
+              />
+            ))}
+          </View>
+        </>
+      )}
+    </Card>
+  );
+}
+
 const styles = StyleSheet.create({
   day: { gap: Spacing.two, marginTop: Spacing.two },
+  assignmentGroup: { gap: Spacing.two },
   taskText: { flexShrink: 1, gap: 2 },
   meta: { fontSize: 13 },
   assignee: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one + 2 },
@@ -362,4 +519,5 @@ const styles = StyleSheet.create({
   optionDot: { width: 8, height: 8, borderRadius: 4 },
   optionLabel: { fontSize: 14 },
   optionNote: { fontSize: 12 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.one + 2 },
 });

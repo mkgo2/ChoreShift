@@ -105,6 +105,29 @@ export default function RulesScreen() {
             suffix="min"
           />
         </Row>
+        <Divider />
+        <Row>
+          <View style={styles.label}>
+            <Body>Coverage window</Body>
+            <Body muted style={styles.meta}>
+              How long a called-out chore stays open to the whole household
+              before the person who called out has to arrange a direct swap.
+            </Body>
+          </View>
+          <Stepper
+            value={rules.openCoverageWindowMinutes}
+            min={15}
+            max={720}
+            step={15}
+            onChange={(openCoverageWindowMinutes) =>
+              dispatch({
+                type: 'updateRules',
+                rules: { openCoverageWindowMinutes },
+              })
+            }
+            suffix="min"
+          />
+        </Row>
       </Card>
 
       {/* ---------------------------------------------------------------- */}
